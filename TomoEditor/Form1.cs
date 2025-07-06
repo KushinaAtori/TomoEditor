@@ -17,30 +17,42 @@ namespace TomoEditor
 
         private PendingChanges changes = new PendingChanges();
 
-        public Form1()
+        public class ConnectionDetails
         {
-            InitializeComponent();
-            this.Load += Form1_Load; // Ensure load event is hooked
+            public required string Server { get; set; }
+            public int Port { get; set; }
+            public required string Username { get; set; }
+            public required string Password { get; set; }
         }
-
         private class PendingChanges
         {
             public int? Money { get; set; }
             public bool RemoveTimePenalty { get; set; } = false;
-            public bool HasChanges => Money.HasValue || RemoveTimePenalty;
+            public byte? ClothesValue { get; set; }
+            public byte? SSClothesValue { get; set; }
+            public bool GiveAllHats { get; set; } = false;
+
+            public bool HasChanges =>
+                Money.HasValue || RemoveTimePenalty ||
+                (ClothesValue.HasValue && SSClothesValue.HasValue) || GiveAllHats;
         }
 
+        public Form1()
+        {
+            InitializeComponent();
+        }
         private void Form1_Load(object sender, EventArgs e) => PromptForSaveFile();
 
         private void btnLoadSave_Click(object sender, EventArgs e) => PromptForSaveFile();
 
         private void PromptForSaveFile()
         {
-            using var openFileDialog = new OpenFileDialog
-            {
-                Filter = "Save Files (*.txt)|*.txt",
-                Title = "Select a Save File"
-            };
+            using var openFileDialog =
+                new OpenFileDialog
+                {
+                    Filter = "Save Files (*.txt)|*.txt",
+                    Title = "Select a Save File"
+                };
 
             if (openFileDialog.ShowDialog() == DialogResult.OK)
             {
@@ -60,7 +72,8 @@ namespace TomoEditor
                     return;
                 }
 
-                MessageBox.Show($"Save file loaded.\nRegion: {region}\nSize: {expectedFileLength} bytes.");
+                MessageBox.Show(
+                    $"Save file loaded.\nRegion: {region}\nSize: {expectedFileLength} bytes.");
             }
         }
 
@@ -76,72 +89,28 @@ namespace TomoEditor
             return $"ftp://{ftpHost}:{ftpPort}{path}";
         }
 
-        private async void btnLoadConnection_Click(object sender, EventArgs e)
-        {
-            btnLoadConnection.Enabled = false;
-            try
-            {
-                await Task.Run(() => LoadConnectionFromFile());
-            }
-            finally
-            {
-                btnLoadConnection.Enabled = true;
-            }
-        }
-
         private void LoadConnectionFromFile()
         {
-            string path = Path.Combine(Application.StartupPath, "connectionDetails.txt");
+            string path =
+                Path.Combine(Application.StartupPath, "connectionDetails.txt");
             if (!File.Exists(path))
             {
                 Invoke(() => MessageBox.Show("No saved connection found."));
                 return;
             }
 
-            var connection = JsonConvert.DeserializeObject<ConnectionDetails>(File.ReadAllText(path));
+            var connection = JsonConvert.DeserializeObject<ConnectionDetails>(
+                File.ReadAllText(path));
             ftpHost = connection.Server?.Replace("ftp://", "").Trim();
             ftpPort = connection.Port > 0 ? connection.Port : 21;
             ftpUser = connection.Username;
             ftpPass = connection.Password;
 
-            Invoke(() =>
-            {
-                MessageBox.Show($"[DEBUG]\nHost: {ftpHost}\nPort: {ftpPort}\nUser: {ftpUser}");
+            Invoke(() => {
+                MessageBox.Show(
+                    $"[DEBUG]\nHost: {ftpHost}\nPort: {ftpPort}\nUser: {ftpUser}");
                 LoadFtpDirectory("/");
             });
-        }
-
-        private void btnBack_Click(object sender, EventArgs e)
-        {
-            if (string.IsNullOrWhiteSpace(currentFtpDirectory) || currentFtpDirectory == "/") return;
-
-            int lastSlash = currentFtpDirectory.LastIndexOf('/');
-            currentFtpDirectory = lastSlash > 0 ? currentFtpDirectory[..lastSlash] : "/";
-            LoadFtpDirectory(currentFtpDirectory);
-        }
-
-        private void btnRoot_Click(object sender, EventArgs e)
-        {
-            currentFtpDirectory = "/";
-            LoadFtpDirectory(currentFtpDirectory);
-        }
-
-        private void btnDownload_Click(object sender, EventArgs e)
-        {
-            if (lstDirectory.SelectedItems.Count == 0) return;
-
-            string selectedFile = lstDirectory.SelectedItems[0].Text;
-            string remoteFile = (currentFtpDirectory == "/" ? "" : currentFtpDirectory.TrimEnd('/')) + "/" + selectedFile;
-
-            using var saveFileDialog = new SaveFileDialog
-            {
-                FileName = selectedFile,
-                DefaultExt = Path.GetExtension(selectedFile),
-                Filter = "All Files (*.*)|*.*"
-            };
-
-            if (saveFileDialog.ShowDialog() == DialogResult.OK)
-                DownloadFileWithProgress(remoteFile, saveFileDialog.FileName);
         }
 
         private void DownloadFileWithProgress(string remotePath, string localPath)
@@ -191,13 +160,82 @@ namespace TomoEditor
             return response.ContentLength;
         }
 
+        private void LoadFtpDirectory(string path)
+        {
+            try
+            {
+                string url = BuildFtpUrl(path);
+                var request = (FtpWebRequest)WebRequest.Create(url);
+                request.Method = WebRequestMethods.Ftp.ListDirectory;
+                request.Credentials = new NetworkCredential(ftpUser, ftpPass);
+
+                using var response = (FtpWebResponse)request.GetResponse();
+                using var stream = response.GetResponseStream();
+                using var reader = new StreamReader(stream);
+
+                lstDirectory.Items.Clear();
+                while (!reader.EndOfStream) lstDirectory.Items.Add(reader.ReadLine());
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to load directory: {ex.Message}");
+            }
+        }
+
+        private void lstDirectory_MouseDoubleClick(object sender,
+                                                   MouseEventArgs e)
+        {
+            if (lstDirectory.SelectedItems.Count == 0)
+                return;
+
+            string selectedName = lstDirectory.SelectedItems[0].Text;
+            string previousDirectory = currentFtpDirectory;
+
+            try
+            {
+                currentFtpDirectory =
+                    (currentFtpDirectory == "/")
+                        ? selectedName
+                        : currentFtpDirectory.TrimEnd('/') + "/" + selectedName;
+                LoadFtpDirectory(currentFtpDirectory);
+            }
+            catch
+            {
+                currentFtpDirectory = previousDirectory;
+                MessageBox.Show($"'{selectedName}' does not appear to be a folder.");
+            }
+        }
+
+        private void CreateBackup()
+        {
+            if (string.IsNullOrEmpty(savedataArcPath) ||
+                !File.Exists(savedataArcPath))
+            {
+                MessageBox.Show("No save file loaded to backup.");
+                return;
+            }
+
+            string dir = Path.GetDirectoryName(savedataArcPath)!;
+            string name = $"savedataarc_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.txt";
+            File.Copy(savedataArcPath, Path.Combine(dir, name), overwrite: false);
+        }
+
         private void btnSaveConnection_Click(object sender, EventArgs e)
         {
             try
             {
-                var connection = new ConnectionDetails { Server = ftpHost, Port = ftpPort, Username = ftpUser, Password = ftpPass };
-                string path = Path.Combine(Application.StartupPath, "connectionDetails.txt");
-                File.WriteAllText(path, JsonConvert.SerializeObject(connection, Formatting.Indented));
+                var connection =
+                    new ConnectionDetails
+                    {
+                        Server = ftpHost,
+                        Port = ftpPort,
+                        Username = ftpUser,
+                        Password = ftpPass
+                    };
+                string path =
+                    Path.Combine(Application.StartupPath, "connectionDetails.txt");
+                File.WriteAllText(
+                    path, JsonConvert.SerializeObject(connection, Formatting.Indented));
                 MessageBox.Show("Connection saved to connectionDetails.txt.");
             }
             catch (Exception ex)
@@ -226,61 +264,57 @@ namespace TomoEditor
             }
         }
 
-        private void LoadFtpDirectory(string path)
+        private void btnBack_Click(object sender, EventArgs e)
         {
-            try
-            {
-                string url = BuildFtpUrl(path);
-                var request = (FtpWebRequest)WebRequest.Create(url);
-                request.Method = WebRequestMethods.Ftp.ListDirectory;
-                request.Credentials = new NetworkCredential(ftpUser, ftpPass);
-
-                using var response = (FtpWebResponse)request.GetResponse();
-                using var stream = response.GetResponseStream();
-                using var reader = new StreamReader(stream);
-
-                lstDirectory.Items.Clear();
-                while (!reader.EndOfStream)
-                    lstDirectory.Items.Add(reader.ReadLine());
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Failed to load directory: {ex.Message}");
-            }
-        }
-
-        private void lstDirectory_MouseDoubleClick(object sender, MouseEventArgs e)
-        {
-            if (lstDirectory.SelectedItems.Count == 0) return;
-
-            string selectedName = lstDirectory.SelectedItems[0].Text;
-            string previousDirectory = currentFtpDirectory;
-
-            try
-            {
-                currentFtpDirectory = (currentFtpDirectory == "/") ? selectedName : currentFtpDirectory.TrimEnd('/') + "/" + selectedName;
-                LoadFtpDirectory(currentFtpDirectory);
-            }
-            catch
-            {
-                currentFtpDirectory = previousDirectory;
-                MessageBox.Show($"'{selectedName}' does not appear to be a folder.");
-            }
-        }
-
-        private void CreateBackup()
-        {
-            if (string.IsNullOrEmpty(savedataArcPath) || !File.Exists(savedataArcPath))
-            {
-                MessageBox.Show("No save file loaded to backup.");
+            if (string.IsNullOrWhiteSpace(currentFtpDirectory) ||
+                currentFtpDirectory == "/")
                 return;
-            }
 
-            string dir = Path.GetDirectoryName(savedataArcPath);
-            string name = $"savedataarc_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.txt";
-            File.Copy(savedataArcPath, Path.Combine(dir, name), overwrite: false);
+            int lastSlash = currentFtpDirectory.LastIndexOf('/');
+            currentFtpDirectory =
+                lastSlash > 0 ? currentFtpDirectory[..lastSlash] : "/";
+            LoadFtpDirectory(currentFtpDirectory);
         }
 
+        private void btnRoot_Click(object sender, EventArgs e)
+        {
+            currentFtpDirectory = "/";
+            LoadFtpDirectory(currentFtpDirectory);
+        }
+
+        private void btnDownload_Click(object sender, EventArgs e)
+        {
+            if (lstDirectory.SelectedItems.Count == 0)
+                return;
+
+            string selectedFile = lstDirectory.SelectedItems[0].Text;
+            string remoteFile =
+                (currentFtpDirectory == "/" ? "" : currentFtpDirectory.TrimEnd('/')) +
+                "/" + selectedFile;
+
+            using var saveFileDialog =
+                new SaveFileDialog
+                {
+                    FileName = selectedFile,
+                    DefaultExt = Path.GetExtension(selectedFile),
+                    Filter = "All Files (*.*)|*.*"
+                };
+
+            if (saveFileDialog.ShowDialog() == DialogResult.OK)
+                DownloadFileWithProgress(remoteFile, saveFileDialog.FileName);
+        }
+        private async void btnLoadConnection_Click(object sender, EventArgs e)
+        {
+            btnLoadConnection.Enabled = false;
+            try
+            {
+                await Task.Run(() => LoadConnectionFromFile());
+            }
+            finally
+            {
+                btnLoadConnection.Enabled = true;
+            }
+        }
         private void btnDisableTimePenalty_Click(object sender, EventArgs e)
         {
             if (string.IsNullOrEmpty(region))
@@ -290,9 +324,9 @@ namespace TomoEditor
             }
 
             changes.RemoveTimePenalty = true;
-            MessageBox.Show("Time penalty removal queued. Click 'Save File' to apply.");
+            MessageBox.Show(
+                "Time penalty removal queued. Click 'Save File' to apply.");
         }
-
         private void btnApplyMoney_Click(object sender, EventArgs e)
         {
             if (!int.TryParse(txtBoxMoneyInput.Text, out int moneyValue))
@@ -302,9 +336,31 @@ namespace TomoEditor
             }
 
             changes.Money = moneyValue;
-            MessageBox.Show($"Money change queued: {moneyValue}. Click 'Save File' to apply.");
+            MessageBox.Show(
+                $"Money change queued: {moneyValue}. Click 'Save File' to apply.");
         }
+        private void btnWriteClothes_Click(object sender, EventArgs e)
+        {
+            byte clothesValue = 3;
+            byte ssClothesValue = 3;
 
+            changes.ClothesValue = clothesValue;
+            changes.SSClothesValue = ssClothesValue;
+
+            MessageBox.Show("Clothing changes queued. Click 'Save File' to apply.");
+        }
+        private void btnGiveAllHats_Click(object sender, EventArgs e)
+        {
+            if (region != "USA")
+            {
+                MessageBox.Show(
+                    "Currently only the USA region is supported for hat modifications.");
+                return;
+            }
+
+            changes.GiveAllHats = true;
+            MessageBox.Show("Hat item changes queued. Click 'Save File' to apply.");
+        }
         private void btnApplyChanges_Click(object sender, EventArgs e)
         {
             if (!changes.HasChanges)
@@ -313,7 +369,8 @@ namespace TomoEditor
                 return;
             }
 
-            if (string.IsNullOrEmpty(savedataArcPath) || !File.Exists(savedataArcPath))
+            if (string.IsNullOrEmpty(savedataArcPath) ||
+                !File.Exists(savedataArcPath))
             {
                 MessageBox.Show("Save file not loaded.");
                 return;
@@ -321,60 +378,24 @@ namespace TomoEditor
 
             CreateBackup();
 
-            using var fs = new FileStream(savedataArcPath, FileMode.Open, FileAccess.Write);
+            using var fs =
+                new FileStream(savedataArcPath, FileMode.Open, FileAccess.Write);
 
             if (changes.Money.HasValue)
-                ApplyMoneyChange(fs, changes.Money.Value);
+                SaveDataModifier.ApplyMoneyChange(fs, changes.Money.Value, region);
 
             if (changes.RemoveTimePenalty)
-                ApplyTimePenaltyPatch(fs);
+                SaveDataModifier.ApplyTimePenaltyPatch(fs, region);
+
+            if (changes.ClothesValue.HasValue && changes.SSClothesValue.HasValue)
+                SaveDataModifier.ApplyClothesChange(fs, changes.ClothesValue.Value,
+                                                    changes.SSClothesValue.Value);
+
+            if (changes.GiveAllHats)
+                SaveDataModifier.ApplyHatChanges(fs);
 
             MessageBox.Show("Changes successfully applied.");
             changes = new PendingChanges();
         }
-
-        private void ApplyMoneyChange(FileStream fs, int moneyValue)
-        {
-            int scaled = moneyValue * 100;
-            byte[] moneyBytes = BitConverter.GetBytes((uint)scaled);
-            if (!BitConverter.IsLittleEndian) Array.Reverse(moneyBytes);
-
-            if (region == "JP")
-            {
-                byte[] padded = new byte[16];
-                Array.Copy(moneyBytes, 0, padded, 8, moneyBytes.Length);
-                fs.Position = 0x14BCA0;
-                fs.Write(padded);
-            }
-            else if (region == "USA")
-            {
-                fs.Position = 0x1E4BB8;
-                fs.Write(moneyBytes);
-            }
-        }
-
-        private void ApplyTimePenaltyPatch(FileStream fs)
-        {
-            byte[] patch = region == "JP"
-                ? new byte[] { 0x40, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03, 0x03, 0x02, 0x00 }
-                : new byte[] { 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03, 0x03, 0x02, 0x00 };
-
-            long offset = region == "JP" ? 0x14BD40 : 0x1E4C70;
-            fs.Position = offset;
-            fs.Write(patch);
-        }
-
-        private void guna2TextBox1_TextChanged(object sender, EventArgs e)
-        {
-
-        }
-    }
-
-    public class ConnectionDetails
-    {
-        public string Server { get; set; }
-        public int Port { get; set; }
-        public string Username { get; set; }
-        public string Password { get; set; }
     }
 }
