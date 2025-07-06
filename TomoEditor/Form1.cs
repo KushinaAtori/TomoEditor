@@ -388,8 +388,7 @@ namespace TomoEditor
                 SaveDataModifier.ApplyTimePenaltyPatch(fs, region);
 
             if (changes.ClothesValue.HasValue && changes.SSClothesValue.HasValue)
-                SaveDataModifier.ApplyClothesChange(fs, changes.ClothesValue.Value,
-                                                    changes.SSClothesValue.Value);
+                SaveDataModifier.ApplyClothesChange(fs, changes.ClothesValue.Value, changes.SSClothesValue.Value);
 
             if (changes.GiveAllHats)
                 SaveDataModifier.ApplyHatChanges(fs);
